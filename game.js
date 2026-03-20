@@ -717,72 +717,74 @@ function updateGroundEnemy(e, dt) {
   const tx = step.c + 0.5, ty = step.r + 0.5;
   const dx = tx - e.x, dy = ty - e.y;
   const dist = Math.sqrt(dx*dx + dy*dy);
-  const move = e.speed * dt;
 
-  // --- 弾回避ベクトルを計算 ---
+  // ステップ到達判定を緩く (0.15タイル以内で次へ)
+  if (dist < 0.15) {
+    e.x = tx; e.y = ty;
+    e.pathIdx++;
+    return;
+  }
+
+  const move = e.speed * dt;
+  const nx = dx / dist, ny = dy / dist;
+
+  // --- 弾回避ベクトル (垂直成分のみ抽出) ---
   const ev = calcEvasion(e);
-  // 慣性つきで滑らかに反映
   e.dodgeVx = e.dodgeVx * 0.7 + ev.x * 0.3;
   e.dodgeVy = e.dodgeVy * 0.7 + ev.y * 0.3;
+  const dot = e.dodgeVx * nx + e.dodgeVy * ny;
+  const perpDX = e.dodgeVx - dot * nx;
+  const perpDY = e.dodgeVy - dot * ny;
+  const perpMag = Math.sqrt(perpDX * perpDX + perpDY * perpDY);
+  const maxDodge = e.speed * 0.55 * dt;
+  const ds = perpMag > 0 ? Math.min(maxDodge, perpMag * dt) / (perpMag * dt + 1e-9) : 0;
 
-  // Stacking prevention: don't occupy same cell as another ground enemy
-  const blocked = state.enemies.some(o =>
-    o.id !== e.id && !o.flying &&
-    Math.abs(o.x - tx) < 0.38 && Math.abs(o.y - ty) < 0.38
-  );
-
-  if (dist <= move) {
-    if (!blocked) {
-      e.x = tx; e.y = ty;
-      e.pathIdx++;
+  // --- 敵同士のソフト反発力 (完全停止させない！) ---
+  let sepX = 0, sepY = 0;
+  const minSep = (e.size + 0.3) * 0.9; // 反発開始距離
+  for (const o of state.enemies) {
+    if (o.id === e.id || o.flying) continue;
+    const sdx = e.x - o.x, sdy = e.y - o.y;
+    const sd = Math.sqrt(sdx * sdx + sdy * sdy);
+    if (sd < minSep && sd > 0.001) {
+      const push = (minSep - sd) / minSep * 0.6;
+      sepX += (sdx / sd) * push;
+      sepY += (sdy / sd) * push;
     }
+  }
+
+  // --- 候補位置: パス方向 + 回避横ズレ + 反発 ---
+  const candX = e.x + nx * move + perpDX * ds * dt + sepX * e.speed * dt;
+  const candY = e.y + ny * move + perpDY * ds * dt + sepY * e.speed * dt;
+
+  const cr = Math.floor(candY), cc = Math.floor(candX);
+  const candOk = cr >= 0 && cr < ROWS && cc >= 0 && cc < COLS && !state.grid[cr][cc];
+
+  if (candOk) {
+    // 候補位置OK
+    e.x = candX; e.y = candY;
+    const fx = nx + perpDX * ds, fy = ny + perpDY * ds;
+    const fm = Math.sqrt(fx*fx + fy*fy);
+    if (fm > 0.01) e.dir = { x: fx/fm, y: fy/fm };
+    e.stuckTimer = 0;
   } else {
-    const nx = dx/dist, ny = dy/dist;
-
-    // 回避ベクトルをパスの主方向に垂直な成分だけ適用
-    // (主方向への逆行は禁止 → パス追従を壊さない)
-    const perpDodgeX = e.dodgeVx - nx * (e.dodgeVx * nx + e.dodgeVy * ny);
-    const perpDodgeY = e.dodgeVy - ny * (e.dodgeVx * nx + e.dodgeVy * ny);
-    const dodgeMag = Math.sqrt(perpDodgeX**2 + perpDodgeY**2);
-
-    // 回避移動量 (最大で通常速度の 60%)
-    const dodgeScale = dodgeMag > 0 ? Math.min(dodgeMag, e.speed * 0.6 * dt) / dodgeMag : 0;
-    const finalDodgeX = perpDodgeX * dodgeScale;
-    const finalDodgeY = perpDodgeY * dodgeScale;
-
-    // 候補位置: パス追従 + 回避
-    const nx2 = e.x + nx * move + finalDodgeX;
-    const ny2 = e.y + ny * move + finalDodgeY;
-
-    // 障害物・スタック判定
-    const targetR = Math.floor(ny2);
-    const targetC = Math.floor(nx2);
-    const cellOk = targetR >= 0 && targetR < ROWS && targetC >= 0 && targetC < COLS
-      && !state.grid[targetR][targetC];
-    const notStacked = !state.enemies.some(o =>
-      o.id !== e.id && !o.flying &&
-      Math.abs(o.x - nx2) < 0.38 && Math.abs(o.y - ny2) < 0.38
-    );
-
-    if (cellOk && notStacked) {
-      e.x = nx2; e.y = ny2;
-      // 回避中は向きにも反映 (見た目)
-      const totalDx = nx + (finalDodgeX / (move + 1e-5));
-      const totalDy = ny + (finalDodgeY / (move + 1e-5));
-      const tdMag = Math.sqrt(totalDx**2 + totalDy**2);
-      if (tdMag > 0.01) e.dir = { x: totalDx/tdMag, y: totalDy/tdMag };
+    // 候補がダメ → 回避・反発なしでパス方向だけ試す
+    const fallX = e.x + nx * move;
+    const fallY = e.y + ny * move;
+    const fr2 = Math.floor(fallY), fc2 = Math.floor(fallX);
+    const fallOk = fr2 >= 0 && fr2 < ROWS && fc2 >= 0 && fc2 < COLS && !state.grid[fr2][fc2];
+    if (fallOk) {
+      e.x = fallX; e.y = fallY;
+      e.dir = { x: nx, y: ny };
+      e.stuckTimer = 0;
     } else {
-      // 回避できないならパス追従だけ
-      const pathBlocked2 = state.enemies.some(o =>
-        o.id !== e.id && !o.flying &&
-        Math.abs(o.x - (e.x+nx*move)) < 0.38 && Math.abs(o.y - (e.y+ny*move)) < 0.38
-      );
-      if (!pathBlocked2) {
-        e.x += nx * move; e.y += ny * move;
-        e.dir = { x: nx, y: ny };
+      // 障害物に完全に阻まれた → スタックタイマー
+      e.stuckTimer = (e.stuckTimer || 0) + dt;
+      if (e.stuckTimer > 1.2) {
+        // 強制解放: パス再計算
+        e.pathDirty = true;
+        e.stuckTimer = 0;
       }
-      // 回避ベクトルをリセット
-      e.dodgeVx *= 0.3; e.dodgeVy *= 0.3;
     }
   }
 }
