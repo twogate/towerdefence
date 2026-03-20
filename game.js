@@ -95,36 +95,43 @@ const ENEMY_DEFS = {
     id: 'grunt', name: 'グラント', color: '#e74c3c',
     type: 'ground', baseHp: 100, baseSpeed: 1.5, baseReward: 10,
     baseDps: 25, baseThresh: 0, size: 0.38,
+    agility: 0.35,  // 弾回避能力 0=なし 1=最大
   },
   runner: {
     id: 'runner', name: 'ランナー', color: '#f39c12',
     type: 'ground', baseHp: 50, baseSpeed: 3.2, baseReward: 8,
     baseDps: 15, baseThresh: 0, size: 0.28,
+    agility: 0.85,  // ランナーは超俊敏
   },
   tank: {
     id: 'tank', name: 'タンク', color: '#7f8c8d',
     type: 'ground', baseHp: 500, baseSpeed: 0.75, baseReward: 55,
     baseDps: 60, baseThresh: 12, size: 0.52,
+    agility: 0.05,  // タンクはほぼ避けない
   },
   brute: {
     id: 'brute', name: 'ブルート', color: '#8e44ad',
     type: 'ground', baseHp: 1200, baseSpeed: 0.6, baseReward: 120,
     baseDps: 120, baseThresh: 25, size: 0.62,
+    agility: 0.0,   // ブルートは避けない（デカすぎて）
   },
   flyer: {
     id: 'flyer', name: 'フライヤー', color: '#3498db',
     type: 'flying', baseHp: 80, baseSpeed: 2.2, baseReward: 15,
     baseDps: 0, baseThresh: 0, size: 0.38,
+    agility: 0.7,
   },
   bomber: {
     id: 'bomber', name: 'ボンバー', color: '#2c3e50',
     type: 'flying', baseHp: 320, baseSpeed: 1.0, baseReward: 42,
     baseDps: 0, baseThresh: 8, size: 0.52,
+    agility: 0.25,
   },
   angel: {
     id: 'angel', name: 'エンジェル', color: '#ecf0f1',
     type: 'flying', baseHp: 1500, baseSpeed: 1.8, baseReward: 200,
     baseDps: 0, baseThresh: 20, size: 0.6,
+    agility: 0.55,
   },
 };
 
@@ -402,10 +409,14 @@ function makeEnemy(type, scale, spawnCol) {
     flying: def.type === 'flying',
     size: def.size,
     color: def.color,
+    agility: def.agility || 0,
     // Ground pathfinding
     path: null, pathIdx: 0, pathDirty: true,
     // Attack state
     isAttacking: false, attackTarget: null, attackTimer: 0,
+    // Evasion state
+    dodgeVx: 0, dodgeVy: 0,
+    dodgeCooldown: 0,
     // Visuals
     dir: { x: 0, y: 1 },
     animT: Math.random() * Math.PI * 2,
@@ -459,6 +470,75 @@ function calcLead(sx, sy, enemy, bulletSpeed) {
 
   if (T < 0 || T > 3) return { x: enemy.x, y: enemy.y }; // fallback: aim directly
   return { x: enemy.x + tvx * T, y: enemy.y + tvy * T };
+}
+
+// ============================================================
+// BULLET EVASION
+// ============================================================
+
+/**
+ * 各敵につき、向かってくる弾を検知して
+ * 回避ベクトル (tiles/s) を返す。
+ * 弾の進行方向に垂直な方向へ押し出す。
+ */
+function calcEvasion(enemy) {
+  if (enemy.agility <= 0) return { x: 0, y: 0 };
+
+  // 検知半径: 敏捷性に応じて広くなる
+  const detR = 1.8 + enemy.agility * 1.8;
+  const detR2 = detR * detR;
+
+  let evX = 0, evY = 0;
+
+  for (const proj of state.projectiles) {
+    const toEx = enemy.x - proj.x;
+    const toEy = enemy.y - proj.y;
+    const d2 = toEx * toEx + toEy * toEy;
+    if (d2 > detR2) continue;
+
+    const spd = Math.sqrt(proj.vx * proj.vx + proj.vy * proj.vy);
+    if (spd < 0.01) continue;
+    const bDx = proj.vx / spd;
+    const bDy = proj.vy / spd;
+
+    // 弾が敵の方向に向かっているか (内積 > 0)
+    const dot = toEx * bDx + toEy * bDy;
+    if (dot < 0.05) continue; // 遠ざかっている弾は無視
+
+    // 最接近時刻 & 最接近距離
+    const t = Math.min(dot / spd, 2.0);
+    const cxF = proj.x + proj.vx * t;
+    const cyF = proj.y + proj.vy * t;
+    const closeDist = Math.sqrt((cxF - enemy.x) ** 2 + (cyF - enemy.y) ** 2);
+
+    // ヒット圏内に来ない弾は無視
+    const hitRadius = enemy.size * 2.2;
+    if (closeDist > hitRadius) continue;
+
+    // 回避方向: 弾の進行に垂直 (2択あるので敵から見て外側を選ぶ)
+    const perpX = -bDy;
+    const perpY =  bDx;
+    // 外積で「敵が弾のどちら側にいるか」を判定
+    const cross = toEx * bDy - toEy * bDx;
+    const sign = cross >= 0 ? 1 : -1;
+
+    // 緊急度: 近いほど・衝突まで時間が短いほど強い
+    const urgency = (1 - closeDist / hitRadius) * (1 - t / 2.0);
+    const strength = urgency * enemy.agility;
+
+    evX += perpX * sign * strength;
+    evY += perpY * sign * strength;
+  }
+
+  if (evX === 0 && evY === 0) return { x: 0, y: 0 };
+
+  // 正規化して速度スケール
+  const mag = Math.sqrt(evX * evX + evY * evY);
+  const scale = Math.min(mag, 1.5) / mag;
+  return {
+    x: evX * scale * enemy.agility * enemy.speed,
+    y: evY * scale * enemy.agility * enemy.speed,
+  };
 }
 
 // ============================================================
@@ -543,8 +623,27 @@ function updateEnemies(dt) {
 }
 
 function updateFlyingEnemy(e, dt) {
-  e.y += e.speed * dt;
-  e.dir = { x: 0, y: 1 };
+  // 弾回避: 飛行系は左右に自由に動ける
+  const ev = calcEvasion(e);
+
+  // 回避Xを滑らかに適用 (慣性あり)
+  e.dodgeVx = e.dodgeVx * 0.75 + ev.x * 0.25;
+  e.dodgeVy = e.dodgeVy * 0.75 + ev.y * 0.25;
+
+  // 横方向の回避速度を足す (縦は基本方向を維持しつつわずかに影響)
+  const newX = e.x + (e.dodgeVx) * dt;
+  const newY = e.y + (e.speed + e.dodgeVy * 0.2) * dt;
+
+  // 画面外に出ないようにクランプ
+  e.x = Math.max(0.3, Math.min(COLS - 0.3, newX));
+  e.y = newY;
+
+  // 向きを更新
+  const dx = e.x - (e.x - e.dodgeVx * dt);
+  e.dir = {
+    x: Math.abs(e.dodgeVx) > 0.1 ? Math.sign(e.dodgeVx) * 0.5 : 0,
+    y: 1,
+  };
 }
 
 function updateGroundEnemy(e, dt) {
@@ -619,6 +718,12 @@ function updateGroundEnemy(e, dt) {
   const dist = Math.sqrt(dx*dx + dy*dy);
   const move = e.speed * dt;
 
+  // --- 弾回避ベクトルを計算 ---
+  const ev = calcEvasion(e);
+  // 慣性つきで滑らかに反映
+  e.dodgeVx = e.dodgeVx * 0.7 + ev.x * 0.3;
+  e.dodgeVy = e.dodgeVy * 0.7 + ev.y * 0.3;
+
   // Stacking prevention: don't occupy same cell as another ground enemy
   const blocked = state.enemies.some(o =>
     o.id !== e.id && !o.flying &&
@@ -632,14 +737,51 @@ function updateGroundEnemy(e, dt) {
     }
   } else {
     const nx = dx/dist, ny = dy/dist;
-    const nx2 = e.x + nx*move, ny2 = e.y + ny*move;
-    const pathBlocked = state.enemies.some(o =>
+
+    // 回避ベクトルをパスの主方向に垂直な成分だけ適用
+    // (主方向への逆行は禁止 → パス追従を壊さない)
+    const perpDodgeX = e.dodgeVx - nx * (e.dodgeVx * nx + e.dodgeVy * ny);
+    const perpDodgeY = e.dodgeVy - ny * (e.dodgeVx * nx + e.dodgeVy * ny);
+    const dodgeMag = Math.sqrt(perpDodgeX**2 + perpDodgeY**2);
+
+    // 回避移動量 (最大で通常速度の 60%)
+    const dodgeScale = dodgeMag > 0 ? Math.min(dodgeMag, e.speed * 0.6 * dt) / dodgeMag : 0;
+    const finalDodgeX = perpDodgeX * dodgeScale;
+    const finalDodgeY = perpDodgeY * dodgeScale;
+
+    // 候補位置: パス追従 + 回避
+    const nx2 = e.x + nx * move + finalDodgeX;
+    const ny2 = e.y + ny * move + finalDodgeY;
+
+    // 障害物・スタック判定
+    const targetR = Math.floor(ny2);
+    const targetC = Math.floor(nx2);
+    const cellOk = targetR >= 0 && targetR < ROWS && targetC >= 0 && targetC < COLS
+      && !state.grid[targetR][targetC];
+    const notStacked = !state.enemies.some(o =>
       o.id !== e.id && !o.flying &&
       Math.abs(o.x - nx2) < 0.38 && Math.abs(o.y - ny2) < 0.38
     );
-    if (!pathBlocked) {
+
+    if (cellOk && notStacked) {
       e.x = nx2; e.y = ny2;
-      e.dir = { x: nx, y: ny };
+      // 回避中は向きにも反映 (見た目)
+      const totalDx = nx + (finalDodgeX / (move + 1e-5));
+      const totalDy = ny + (finalDodgeY / (move + 1e-5));
+      const tdMag = Math.sqrt(totalDx**2 + totalDy**2);
+      if (tdMag > 0.01) e.dir = { x: totalDx/tdMag, y: totalDy/tdMag };
+    } else {
+      // 回避できないならパス追従だけ
+      const pathBlocked2 = state.enemies.some(o =>
+        o.id !== e.id && !o.flying &&
+        Math.abs(o.x - (e.x+nx*move)) < 0.38 && Math.abs(o.y - (e.y+ny*move)) < 0.38
+      );
+      if (!pathBlocked2) {
+        e.x += nx * move; e.y += ny * move;
+        e.dir = { x: nx, y: ny };
+      }
+      // 回避ベクトルをリセット
+      e.dodgeVx *= 0.3; e.dodgeVy *= 0.3;
     }
   }
 }
