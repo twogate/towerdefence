@@ -300,9 +300,28 @@ function scaledDangerMap(base, agility) {
   return base.map(row => row.map(v => v * agility));
 }
 
+/** 新しいパスの中で現在地に最も近いインデックスを探す */
+function findClosestPathIdx(path, x, y) {
+  if (!path || path.length === 0) return 0;
+  let best = 0, bestD2 = Infinity;
+  for (let i = 0; i < path.length; i++) {
+    const dx = x - (path[i].c + 0.5);
+    const dy = y - (path[i].r + 0.5);
+    const d2 = dx*dx + dy*dy;
+    if (d2 < bestD2) { bestD2 = d2; best = i; }
+  }
+  // 現在地より「前方」のインデックスにする（後退防止）
+  // 最近点が最後でなければ1つ先を使う
+  return Math.min(best + 1, path.length - 1);
+}
+
 function invalidateAllPaths() {
   for (const e of state.enemies) {
-    if (!e.flying) e.pathDirty = true;
+    if (!e.flying) {
+      e.pathDirty = true;
+      // デバウンス: 即再計算せず少し待つ（ブルブル防止）
+      e.pathRecalcDelay = Math.max(e.pathRecalcDelay || 0, 0.12);
+    }
   }
   state.dangerMapDirty = true;
 }
@@ -708,21 +727,29 @@ function updateFlyingEnemy(e, dt) {
 
 function updateGroundEnemy(e, dt) {
   // --- PATH REFRESH ---
-  if (e.pathDirty || !e.path) {
+  // デバウンス中は旧パスのまま動き続ける（止まらない！）
+  if (e.pathRecalcDelay > 0) {
+    e.pathRecalcDelay -= dt;
+  } else if (e.pathDirty || !e.path) {
     // dangerMap が古ければ再計算
     if (state.dangerMapDirty || !state.dangerMap) computeBaseDangerMap();
 
     const sr = Math.max(0, Math.min(ROWS-1, Math.round(e.y - 0.5)));
     const sc = Math.max(0, Math.min(COLS-1, Math.round(e.x - 0.5)));
 
-    // agility > 0 なら danger map を使って武器射程を迂回するルートを選ぶ
-    // agility=0 (タンク/ブルート) は最短距離のみ
     const dmap = e.agility > 0
       ? scaledDangerMap(state.dangerMap, e.agility)
       : null;
 
-    e.path = aStar(sr, sc, GOAL_ROW, GOAL_COL, state.grid, false, dmap);
-    e.pathIdx = 0;
+    const newPath = aStar(sr, sc, GOAL_ROW, GOAL_COL, state.grid, false, dmap);
+
+    if (newPath) {
+      // 現在地に最も近い点から再開 → 後退・ブルブルなし
+      e.path = newPath;
+      e.pathIdx = findClosestPathIdx(newPath, e.x, e.y);
+    } else {
+      e.path = null;
+    }
     e.pathDirty = false;
 
     if (!e.path) {
