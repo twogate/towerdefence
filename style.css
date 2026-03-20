@@ -54,6 +54,28 @@ html, body {
 #wave-status { font-size: 11px; color: var(--text2); }
 #enemy-count { font-size: 11px; color: var(--orange); }
 
+#btn-bg {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--text2);
+  border-radius: 5px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+#btn-bg.bg-pause {
+  background: rgba(248,81,73,0.15);
+  border-color: var(--red);
+  color: var(--red);
+}
+#btn-bg.bg-run {
+  background: rgba(63,185,80,0.15);
+  border-color: var(--green);
+  color: var(--green);
+}
+
 /* ===== CANVAS ===== */
 #canvas-wrap {
   flex: 1;

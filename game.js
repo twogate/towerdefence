@@ -561,10 +561,11 @@ function update(dt) {
       spawnEnemy();
       state.spawnTimer += spawnInterval(state.wave);
     }
-    // Wave done?
+    // Wave done? → 全滅なら3秒で即次Wave
     if (state.enemiesSpawned >= state.waveEnemies.length && state.enemies.length === 0) {
       state.phase = 'idle';
-      state.waveTimer = waveInterval(state.wave);
+      state.waveTimer = 3;
+      showToast(`✅ Wave ${state.wave} クリア！`, '#3fb950');
     }
   }
 
@@ -1811,13 +1812,57 @@ function restartGame() {
 }
 
 // ============================================================
+// BACKGROUND MODE
+// ============================================================
+let bgPauseMode = false; // true = バックグラウンドで停止, false = 継続
+
+function toggleBgMode() {
+  bgPauseMode = !bgPauseMode;
+  const btn = document.getElementById('btn-bg');
+  if (bgPauseMode) {
+    btn.textContent = '⏸ BG停止中';
+    btn.className = 'bg-pause';
+    showToast('⏸ バックグラウンドで停止するよ');
+  } else {
+    btn.textContent = '▶ BG継続中';
+    btn.className = 'bg-run';
+    showToast('▶ バックグラウンドでも動き続けるよ');
+  }
+}
+
+// フォアグラウンドに戻ったとき dt が爆発しないようリセット
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    state.lastTime = performance.now();
+    render();
+  }
+});
+
+// バックグラウンド継続用の独立インターバル (RAF は非表示タブでは ~1fps になるため)
+setInterval(() => {
+  if (!document.hidden) return;       // 表示中は RAF に任せる
+  if (bgPauseMode) return;            // 停止モードはスキップ
+  if (state.phase === 'gameover') return;
+  const now = performance.now();
+  const dt = Math.min((now - state.lastTime) / 1000, 0.1);
+  state.lastTime = now;
+  update(dt);
+}, 50); // 20fps でバックグラウンド放置には十分
+
+// ============================================================
 // GAME LOOP
 // ============================================================
 function gameLoop(ts) {
-  const dt = Math.min((ts - state.lastTime) / 1000, 0.05);
-  state.lastTime = ts;
-  if (state.phase !== 'gameover') {
-    update(dt);
+  // タブが非表示 & 停止モードなら何もしない
+  if (document.hidden && bgPauseMode) {
+    requestAnimationFrame(gameLoop);
+    return;
+  }
+  // バックグラウンド継続中はインターバルが update を担うので render だけ
+  if (!document.hidden) {
+    const dt = Math.min((ts - state.lastTime) / 1000, 0.05);
+    state.lastTime = ts;
+    if (state.phase !== 'gameover') update(dt);
     render();
   }
   requestAnimationFrame(gameLoop);
