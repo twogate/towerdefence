@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>🏰 Tower Defence</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- TOP HUD -->
+    <div id="hud">
+      <div class="hud-block">
+        <div class="hud-label">WAVE</div>
+        <div class="hud-value" id="wave-num">0</div>
+      </div>
+      <div class="hud-block hud-center">
+        <div id="wave-status">Wave 1 まで: <span id="wave-timer">15</span>s</div>
+        <div id="enemy-count"></div>
+      </div>
+      <div class="hud-block hud-right">
+        <div class="hud-label">💰 GOLD</div>
+        <div class="hud-value" id="gold-amount">500</div>
+      </div>
+    </div>
+
+    <!-- GAME CANVAS -->
+    <div id="canvas-wrap">
+      <canvas id="game-canvas"></canvas>
+      <div id="toast-area"></div>
+    </div>
+
+    <!-- BOTTOM PANEL -->
+    <div id="bottom-panel">
+      <div id="mode-tabs">
+        <button class="mode-tab active" data-mode="place" onclick="setMode('place')">🏗 配置</button>
+        <button class="mode-tab" data-mode="upgrade" onclick="setMode('upgrade')">⬆️ 強化</button>
+        <button class="mode-tab" data-mode="sell" onclick="setMode('sell')">💸 売却</button>
+      </div>
+      <div id="item-palette"></div>
+    </div>
+
+    <!-- UPGRADE PANEL (slide-up) -->
+    <div id="upgrade-panel" class="hidden">
+      <div id="upgrade-inner">
+        <div id="upgrade-header">
+          <span id="upgrade-title"></span>
+          <button id="upgrade-close" onclick="closeUpgradePanel()">✕</button>
+        </div>
+        <div id="upgrade-content"></div>
+      </div>
+    </div>
+
+    <!-- GAMEOVER -->
+    <div id="gameover-screen" class="hidden">
+      <div id="gameover-box">
+        <div id="gameover-title">💀 GAME OVER</div>
+        <div id="gameover-wave">Wave <span id="final-wave">0</span> まで到達！</div>
+        <div id="gameover-gold">獲得ゴールド: <span id="final-gold">0</span></div>
+        <button id="btn-restart" onclick="restartGame()">🔄 もう一度</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>
