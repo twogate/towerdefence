@@ -73,7 +73,7 @@ const WEAPON_DEFS = {
 
 const SANDBAG_DEF = {
   id: 'sandbag', name: '土嚢', icon: '🧱',
-  color: '#c8a96e', baseCost: 30,
+  color: '#c8a96e', baseCost: 2,
   desc: '敵進路を妨害・HPあり',
   baseHp: 250,
 };
@@ -148,6 +148,8 @@ function makeInitialState() {
     projectiles: [],
     explosions: [],
     particles: [],
+    dangerMap: null,
+    dangerMapDirty: true,
 
     wave: 0,
     gold: 500,
@@ -178,8 +180,56 @@ function heuristic(r1, c1, r2, c2) {
 
 const DIRS = [[-1,0],[1,0],[0,-1],[0,1]];
 
+/** DDA ライン上に障害物があるか確認 (danger map 計算用 LOS) */
+function hasLOS(r0, c0, r1, c1) {
+  const steps = Math.max(Math.abs(r1 - r0), Math.abs(c1 - c0));
+  if (steps === 0) return true;
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    const r = Math.round(r0 + (r1 - r0) * t);
+    const c = Math.round(c0 + (c1 - c0) * t);
+    if (r < 0 || r >= ROWS || c < 0 || c >= COLS) continue;
+    if (state.grid[r] && state.grid[r][c]) return false; // 障害物で遮蔽
+  }
+  return true;
+}
+
+/**
+ * 武器の射程範囲を「コスト増」として表現した danger map を計算する。
+ * 敵はこのコストを避けてルートを選ぶ (agility で重み調整)。
+ * グリッド変更時に再計算。
+ */
+function computeBaseDangerMap() {
+  const map = Array.from({ length: ROWS }, () => new Float32Array(COLS));
+  for (let wr = 0; wr < ROWS; wr++) {
+    for (let wc = 0; wc < COLS; wc++) {
+      const cell = state.grid[wr][wc];
+      if (!cell || cell.type !== 'weapon') continue;
+      const stats = weaponStats(cell.weaponType, cell.upgrades);
+      const range = stats.range;
+      const rangeSq = range * range;
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+          if (state.grid[r][c]) continue;
+          const dx = c + 0.5 - (wc + 0.5);
+          const dy = r + 0.5 - (wr + 0.5);
+          const d2 = dx * dx + dy * dy;
+          if (d2 > rangeSq) continue;
+          // LOS チェック: 土嚢などに遮られていれば見えない
+          if (!hasLOS(r, c, wr, wc)) continue;
+          const dist = Math.sqrt(d2);
+          // 中心に近いほど危険度大 (最大コスト +7)
+          map[r][c] += (1 - dist / range) * 7;
+        }
+      }
+    }
+  }
+  state.dangerMap = map;
+  state.dangerMapDirty = false;
+}
+
 /** A* from (sr,sc) to (gr,gc) avoiding blocked cells. Returns path or null. */
-function aStar(sr, sc, gr, gc, grid, ignoreObstacles) {
+function aStar(sr, sc, gr, gc, grid, ignoreObstacles, dangerMap) {
   const key = (r,c) => r * COLS + c;
 
   if (!ignoreObstacles && grid[sr] && grid[sr][sc]) return null;
@@ -221,7 +271,9 @@ function aStar(sr, sc, gr, gc, grid, ignoreObstacles) {
       if (!ignoreObstacles && grid[nr][nc]) continue;
 
       const nk = key(nr, nc);
-      const ng = curG + 1;
+      // 武器射程内のセルはコスト増 (agility で重み付け)
+      const danger = dangerMap ? (dangerMap[nr][nc] || 0) : 0;
+      const ng = curG + 1 + danger;
       if (!gScore.has(nk) || ng < gScore.get(nk)) {
         gScore.set(nk, ng);
         parent.set(nk, curKey);
@@ -242,10 +294,17 @@ function findBlocker(sr, sc, gr, gc, grid) {
   return null;
 }
 
+/** dangerMap を agility 倍にスケールした新しいマップを返す */
+function scaledDangerMap(base, agility) {
+  if (!base || agility <= 0) return null;
+  return base.map(row => row.map(v => v * agility));
+}
+
 function invalidateAllPaths() {
   for (const e of state.enemies) {
     if (!e.flying) e.pathDirty = true;
   }
+  state.dangerMapDirty = true;
 }
 
 // ============================================================
@@ -318,7 +377,7 @@ function waveScale(wave) {
 
 function buildWave(wave) {
   const scale = waveScale(wave);
-  const count = Math.floor(4 + wave * 1.6 + Math.random() * wave * 0.5);
+  const count = Math.floor(10 + wave * 1.6 + Math.random() * wave * 0.5);
   const enemies = [];
 
   for (let i = 0; i < count; i++) {
@@ -395,7 +454,7 @@ function makeSandbag(r, c, level) {
 
 function makeEnemy(type, scale, spawnCol) {
   const def = ENEMY_DEFS[type];
-  const hp = def.baseHp * scale;
+  const hp = def.baseHp * 1.5 * scale;
   const spd = def.baseSpeed * (0.85 + Math.random() * 0.3) * (1 + (scale - 1) * 0.25);
   const dps = def.baseDps * scale;
   const thresh = def.baseThresh > 0 ? Math.floor(def.baseThresh * Math.pow(scale, 0.7)) : 0;
@@ -650,10 +709,19 @@ function updateFlyingEnemy(e, dt) {
 function updateGroundEnemy(e, dt) {
   // --- PATH REFRESH ---
   if (e.pathDirty || !e.path) {
+    // dangerMap が古ければ再計算
+    if (state.dangerMapDirty || !state.dangerMap) computeBaseDangerMap();
+
     const sr = Math.max(0, Math.min(ROWS-1, Math.round(e.y - 0.5)));
     const sc = Math.max(0, Math.min(COLS-1, Math.round(e.x - 0.5)));
-    // If standing on a cell with obstacle (shouldn't happen), use nearest free
-    e.path = aStar(sr, sc, GOAL_ROW, GOAL_COL, state.grid, false);
+
+    // agility > 0 なら danger map を使って武器射程を迂回するルートを選ぶ
+    // agility=0 (タンク/ブルート) は最短距離のみ
+    const dmap = e.agility > 0
+      ? scaledDangerMap(state.dangerMap, e.agility)
+      : null;
+
+    e.path = aStar(sr, sc, GOAL_ROW, GOAL_COL, state.grid, false, dmap);
     e.pathIdx = 0;
     e.pathDirty = false;
 
