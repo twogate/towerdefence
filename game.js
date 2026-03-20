@@ -423,7 +423,7 @@ function waveInterval(wave) {
 }
 
 function spawnInterval(wave) {
-  return Math.max(0.18, 2.2 - wave * 0.06);
+  return Math.max(0.18, 1.8 - wave * 0.06);
 }
 
 // ============================================================
@@ -674,8 +674,8 @@ function updateEnemies(dt) {
       updateGroundEnemy(e, dt);
     }
 
-    // Goal reached?
-    if (e.y >= GOAL_ROW + 0.8 && Math.abs(e.x - (GOAL_COL+0.5)) < 2) {
+    // Goal reached? → 画面下端に到達したら即ゲームオーバー (x無関係)
+    if (e.y >= ROWS - 0.3) {
       triggerGameOver();
       return;
     }
@@ -926,17 +926,27 @@ function tickWeapon(w, dt) {
 function pickTarget(w, stats) {
   const wx = w.c + 0.5, wy = w.r + 0.5;
   const rangeSq = stats.range * stats.range;
-  let best = null, bestProg = -1;
+
+  // ダメージが入る敵を最優先 (prog=ゴール到達度 で比較)
+  // 全員に閾値超えてなければ次善策として誰でも狙う
+  let bestOk = null, bestOkProg = -1;   // ダメージ入る敵の最前線
+  let bestAny = null, bestAnyProg = -1; // 誰でもいいの最前線
 
   for (const e of state.enemies) {
     const dx = e.x - wx, dy = e.y - wy;
-    if (dx*dx + dy*dy <= rangeSq) {
-      // Progress = how far toward goal (higher = higher priority)
-      const prog = e.y + (e.flying ? 0.5 : 0);
-      if (prog > bestProg) { bestProg = prog; best = e; }
+    if (dx*dx + dy*dy > rangeSq) continue;
+
+    const prog = e.y + (e.flying ? 0.5 : 0);
+    if (prog > bestAnyProg) { bestAnyProg = prog; bestAny = e; }
+
+    // AOE武器は爆風ダメ÷2でも閾値超えればOK扱い
+    const effectiveDmg = stats.aoe > 0 ? stats.damage * 0.5 : stats.damage;
+    if (effectiveDmg > e.thresh) {
+      if (prog > bestOkProg) { bestOkProg = prog; bestOk = e; }
     }
   }
-  return best;
+
+  return bestOk ?? bestAny; // ダメ入る敵優先、全員無敵ならとりあえず撃つ
 }
 
 function fireWeapon(w, stats, target) {
@@ -1866,10 +1876,20 @@ function doSandbagDowngrade() {
 // GAMEOVER
 // ============================================================
 function triggerGameOver() {
+  if (state.phase === 'gameover') return;
   state.phase = 'gameover';
-  document.getElementById('final-wave').textContent = state.wave;
-  document.getElementById('final-gold').textContent = fmtGold(state.totalGold);
-  document.getElementById('gameover-screen').classList.remove('hidden');
+
+  // 画面を赤フラッシュ
+  const flash = document.createElement('div');
+  flash.style.cssText = 'position:fixed;inset:0;background:rgba(255,0,0,0.45);z-index:150;pointer-events:none;animation:flashOut 0.6s ease forwards';
+  document.body.appendChild(flash);
+  flash.addEventListener('animationend', () => flash.remove());
+
+  setTimeout(() => {
+    document.getElementById('final-wave').textContent = state.wave;
+    document.getElementById('final-gold').textContent = fmtGold(state.totalGold);
+    document.getElementById('gameover-screen').classList.remove('hidden');
+  }, 400);
 }
 
 function restartGame() {
