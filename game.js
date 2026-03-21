@@ -1048,23 +1048,7 @@ function applyAoe(x, y, radius, damage) {
       hurtEnemy(j, eff);
     }
   }
-  // Friendly fire: tiny damage to structures in AOE
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
-      const cell = state.grid[r][c];
-      if (!cell) continue;
-      const dx = c + 0.5 - x, dy = r + 0.5 - y;
-      const d = Math.sqrt(dx*dx + dy*dy);
-      if (d <= radius) {
-        cell.hp -= damage * (1 - d/radius*0.6) * 0.05;
-        if (cell.hp <= 0) {
-          state.grid[r][c] = null;
-          invalidateAllPaths();
-          spawnParticles(c+0.5, r+0.5, '#c8a96e', 6);
-        }
-      }
-    }
-  }
+  // Friendly fire removed: AOE does not damage own structures
 }
 
 function hurtEnemy(idx, damage) {
